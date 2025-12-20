@@ -2,8 +2,8 @@
 <Project>
     <PropertyGroup>
         <!-- Common Versioning and Module Information -->
-        <Version>0.0.1</Version>
-        <ModName>Monkey Injection Library</ModName>
+        <Version>0.0.2</Version>
+        <ModName>MonkeyInjectionLibrary</ModName>
         <ModGUID>mattymatty.MonkeyInjectionLibrary</ModGUID>
         <ModNameSpace>InjectionLibrary</ModNameSpace>
         <AssemblyVersion>$(Version)</AssemblyVersion>

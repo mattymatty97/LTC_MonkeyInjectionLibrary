@@ -39,6 +39,8 @@ internal static class Preloader
     private static readonly Dictionary<string, Dictionary<string, List<(TypeDefinition @interface, ErrorHandlingStrategy strategy)>>> Interfaces = [];
 
     private static readonly LinkedList<AssemblyDefinition> LoadedAssemblies = [];
+    
+    private static readonly HashSet<string> TargetTypes = [];
 
     private static bool _inError;
     
@@ -66,8 +68,10 @@ internal static class Preloader
                     
                     foreach (var type in module.Types)
                     {
-                        if (!dict.TryGetValue(type.Name, out var list))
+                        if (!dict.TryGetValue(type.FullName, out var list))
                             continue;
+                        
+                        TargetTypes.Remove(type.GetAssemblyQualifiedName());
 
                         foreach (var (@interface, strategy) in list)
                         {
@@ -174,6 +178,12 @@ internal static class Preloader
         }
         
         LoadedAssemblies.Clear();
+
+        if (TargetTypes.Count > 0)
+        {
+            _inError = true;
+            Log.LogFatal($"Some Injection types have not been found:\n [{string.Join(", ", TargetTypes)}]");
+        }
         
         if (_inError)
         {
@@ -241,7 +251,7 @@ internal static class Preloader
                         at.AttributeType.FullName == HandleErrorsAttributeName);
 
                 if (strategyAttribute != null)
-                    assemblyStrategy = strategyAttribute.GetAttributeInstance<HandleErrorsAttribute>().Strategy;
+                    assemblyStrategy = (ErrorHandlingStrategy)strategyAttribute.ConstructorArguments[0].Value;
 
                 //search for interfaces tagged with InjectInterfaceAttribute
                 foreach (var type in assemblyDefinition.MainModule.Types)
@@ -249,31 +259,36 @@ internal static class Preloader
                     if (!type.HasCustomAttributes)
                         continue;
 
-                    var attributes = type.CustomAttributes
+                    var injectAttributes = type.CustomAttributes
                         .Where(at => at.AttributeType.FullName == InjectInterfaceAttributeName).ToArray();
-                    if (!attributes.Any())
+                    if (!injectAttributes.Any())
                         continue;
 
                     Log.LogDebug($"Found {type.FullName}");
 
-                    foreach (var customAttribute in attributes)
+                    foreach (var customAttribute in injectAttributes)
                     {
-                        var instance = customAttribute.GetAttributeInstance<InjectInterfaceAttribute>();
-
-                        if (!Interfaces.TryGetValue(instance.AssemblyName, out var dict))
+                        var targetType = (TypeReference)customAttribute.ConstructorArguments[0].Value;
+                        
+                        TargetTypes.Add(targetType.GetAssemblyQualifiedName());
+                        
+                        var assemblyName = $"{targetType.Scope.Name}.dll";
+                        var typeName = targetType.FullName;
+                        
+                        if (!Interfaces.TryGetValue(assemblyName, out var dict))
                         {
                             dict = [];
-                            Interfaces[instance.AssemblyName] = dict;
+                            Interfaces[assemblyName] = dict;
                         }
 
-                        if (!dict.TryGetValue(instance.TypeName, out var list))
+                        if (!dict.TryGetValue(typeName, out var list))
                         {
                             list = [];
-                            dict[instance.TypeName] = list;
+                            dict[typeName] = list;
                         }
-
                         list.Add((type, assemblyStrategy));
                     }
+                    
                 }
             }
             catch (BadImageFormatException ex)

@@ -109,6 +109,17 @@ internal static class InjectionHelper
             HandleError($"Type '{@interface.FullName}' is a Generic type!", errorHandlingStrategy);
 
         Preloader.Log.LogDebug($"Injecting '{@interface.FullName}' into {self.FullName}'");
+        
+        if (self.Interfaces.Any(i => i.InterfaceType == @interface))
+        {
+            Preloader.Log.LogWarning($"Interface '{@interface.FullName}' is already implemented, SKIPPING!");
+            return;
+        }
+
+        foreach (var parent in definition.Interfaces)
+        {
+            self.ImplementInterface(parent.InterfaceType, errorHandlingStrategy);
+        }
 
         // Import the interface reference into the target assembly
         var newRef = self.Module.ImportReference(@interface);
@@ -717,5 +728,20 @@ internal static class InjectionHelper
             return;
         collection.Add(newMember);
     }
+    
+    internal static string GetAssemblyQualifiedName(this TypeReference type)
+    {
+        var assemblyName = type.Scope switch
+        {
+            AssemblyNameReference anr => anr.FullName,
+            ModuleDefinition module => module.Assembly?.Name?.FullName,
+            _ => null
+        };
+
+        return assemblyName != null
+            ? $"{type.FullName}, {assemblyName}"
+            : type.FullName;
+    }
+
     
 }

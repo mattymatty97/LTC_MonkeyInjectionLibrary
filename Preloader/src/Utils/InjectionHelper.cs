@@ -19,6 +19,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using HarmonyLib;
 using InjectionLibrary.Attributes;
 using InjectionLibrary.Exceptions;
 using Mono.Cecil;
@@ -661,7 +662,7 @@ internal static class InjectionHelper
         module.ImportReference(typeof(InjectedMemberAttribute));
 
         // Get the constructor you want to use
-        var attributeCtor = module.ImportReference(typeof(InjectedMemberAttribute).GetConstructor([]));
+        var attributeCtor = module.ImportReference(typeof(InjectedMemberAttribute).GetConstructor(AccessTools.all, null, [], []));
 
         // Create the custom attribute
         var customAttribute = new CustomAttribute(attributeCtor);

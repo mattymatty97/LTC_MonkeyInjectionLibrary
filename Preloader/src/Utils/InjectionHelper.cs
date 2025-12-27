@@ -88,13 +88,15 @@ internal static class InjectionHelper
         {
             default:
             case ErrorHandlingStrategy.Terminate:
+                Preloader.inError = ErrorLevel.Hard;
                 Preloader.Log.LogFatal(message);
                 throw new TerminationException("Fatal Injection error!");
             case ErrorHandlingStrategy.LogWarning:
                 Preloader.Log.LogWarning(message);
                 break;
             case ErrorHandlingStrategy.LogError:
-                Preloader.Log.LogFatal(message);
+                Preloader.inError = ErrorLevel.Soft;
+                Preloader.Log.LogError(message);
                 break;
             case ErrorHandlingStrategy.Ignore:
                 break;

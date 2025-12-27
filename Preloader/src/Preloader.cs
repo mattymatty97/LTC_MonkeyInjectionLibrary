@@ -21,12 +21,15 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using BepInEx;
 using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using HarmonyLib;
 using InjectionLibrary.Attributes;
 using InjectionLibrary.Exceptions;
+using InjectionLibrary.Patches;
 using InjectionLibrary.Utils;
 using JetBrains.Annotations;
 using Mono;
@@ -60,7 +63,17 @@ internal static class Preloader
     
     private static readonly HashSet<string> TargetTypes = [];
 
-    private static bool _inError;
+    private static ErrorLevel _inError;
+
+    internal static ErrorLevel inError
+    {
+        get => _inError;
+        set 
+        {
+            if (value > _inError)
+                _inError = value;
+        }
+    }
     
     //Required by BepInEx!
     public static IEnumerable<string> TargetDLLs => EnumerateTargetDlLs();
@@ -70,7 +83,7 @@ internal static class Preloader
     //Required by BepInEx!
     public static void Patch(ref AssemblyDefinition assembly)
     {
-        if (_inError)
+        if (inError > ErrorLevel.Soft)
             return;
         
         try
@@ -101,7 +114,7 @@ internal static class Preloader
         }
         catch (Exception ex)
         {
-            _inError = true;
+            inError = ErrorLevel.Hard;
             if (ex is not TerminationException)
                 Log.LogFatal($"Exception while patching {assembly.Name.Name}:\n{ex}");
         }
@@ -197,13 +210,13 @@ internal static class Preloader
         
         LoadedAssemblies.Clear();
 
-        if (TargetTypes.Count > 0)
+        if (TargetTypes.Count > 0 && inError < ErrorLevel.Hard)
         {
-            _inError = true;
-            Log.LogFatal($"Some Injection types have not been found:\n [{string.Join(", ", TargetTypes)}]");
+            inError = ErrorLevel.Soft;
+            Log.LogFatal($"Some Injection types have not been found:\n |- {string.Join("\n |- ", TargetTypes)}");
         }
         
-        if (_inError)
+        if (inError > ErrorLevel.None)
         {
             Log.LogWarning("""
 
@@ -214,6 +227,15 @@ internal static class Preloader
                            //////////////////////////////////////////////////////////////////
                            \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
                            """);
+            
+            if (ConsoleManager.ConsoleActive)
+            {
+                Log.LogWarning("Pausing for 10s to let the user read the logs");
+                Thread.Sleep(TimeSpan.FromSeconds(10));
+            }
+            
+            if (inError >= ErrorLevel.Hard)
+                Harmony.CreateAndPatchAll(typeof(TerminationPatch), GUID);
         }
         Log.LogInfo("Preloader Finished");
     }
@@ -257,7 +279,7 @@ internal static class Preloader
                                   The file name has to be the same as the AssemblyName!
                                   ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
                                   """);
-                    _inError = true;
+                    inError = ErrorLevel.Soft;
                     break;
                 }
 
@@ -316,7 +338,7 @@ internal static class Preloader
             } 
             catch (Exception ex)
             {
-                _inError = true;
+                inError = ErrorLevel.Hard;
                 Log.LogFatal($"Exception parsing {Path.GetRelativePath(Paths.BepInExRootPath, path)}:\n{ex}");
                 break;
             }
@@ -326,7 +348,7 @@ internal static class Preloader
 
         foreach (var assembly in Interfaces.Keys)
         {
-            if (_inError)
+            if (inError > ErrorLevel.Soft)
                 break;
             
             _targetAssembly = assembly;

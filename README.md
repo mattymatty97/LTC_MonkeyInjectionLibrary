@@ -29,7 +29,6 @@ This approach keeps patches:
 
 1. Mod authors define one or more interfaces.
 2. Attributes are applied to describe:
-
     * Which Class to inject into
     * How errors should be handled
 3. The library scans loaded assemblies marked for injection.

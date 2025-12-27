@@ -31,4 +31,7 @@ namespace InjectionLibrary.Attributes;
 /// <seealso cref="InjectionLibrary.Utils.InjectionHelper"/>
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Field | AttributeTargets.Property | AttributeTargets.Event,
     AllowMultiple = true)]
-internal class InjectedMemberAttribute : Attribute;
+public class InjectedMemberAttribute : Attribute
+{
+    internal InjectedMemberAttribute() {}
+}

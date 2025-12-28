@@ -631,7 +631,7 @@ internal static class InjectionHelper
                         new ParameterDefinition(param.Name, param.Attributes, type.Module.ImportReference(param.ParameterType)));
                 }
 
-                // Create method body (simple return or throw for now)
+                // Create the method body (simple return or throw for now)
                 var il = implementation.Body.GetILProcessor();
 
                 if (method.ReturnType.FullName != "System.Void")

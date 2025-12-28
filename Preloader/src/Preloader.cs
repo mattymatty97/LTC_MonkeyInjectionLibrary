@@ -102,7 +102,7 @@ internal static class Preloader
                         if (!dict.TryGetValue(type.FullName, out var list))
                             continue;
                         
-                        TargetTypes.Remove(type.GetAssemblyQualifiedName());
+                        TargetTypes.Remove($"{type.FullName} from {_targetAssembly}");
 
                         foreach (var (@interface, strategy) in list)
                         {
@@ -271,7 +271,8 @@ internal static class Preloader
 
                 if (assemblyDefinition.Name.Name != Path.GetFileNameWithoutExtension(path))
                 {
-                    Log.LogFatal($"""
+                    inError = ErrorLevel.Soft;
+                    Log.LogError($"""
 
                                   ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
                                   Found assembly "{Path.GetRelativePath(Paths.BepInExRootPath, path)}"
@@ -279,7 +280,6 @@ internal static class Preloader
                                   The file name has to be the same as the AssemblyName!
                                   ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
                                   """);
-                    inError = ErrorLevel.Soft;
                     break;
                 }
 
@@ -310,10 +310,10 @@ internal static class Preloader
                     {
                         var targetType = (TypeReference)customAttribute.ConstructorArguments[0].Value;
                         
-                        TargetTypes.Add(targetType.GetAssemblyQualifiedName());
-                        
                         var assemblyName = $"{targetType.Scope.Name}.dll";
                         var typeName = targetType.FullName;
+                        
+                        TargetTypes.Add($"{typeName} from {assemblyName}");
                         
                         if (!Interfaces.TryGetValue(assemblyName, out var dict))
                         {
@@ -335,6 +335,11 @@ internal static class Preloader
             {
                 Log.LogWarning("Skipping " + Path.GetRelativePath(Paths.BepInExRootPath, path) + " because it's not a valid .NET assembly. Full error: " +
                                ex.Message);
+            }
+            catch (IOException ex)
+            {
+                inError = ErrorLevel.Soft;
+                Log.LogError($"Failed to open {Path.GetRelativePath(Paths.BepInExRootPath, path)}. Full error:\n{ex.Message}");
             } 
             catch (Exception ex)
             {

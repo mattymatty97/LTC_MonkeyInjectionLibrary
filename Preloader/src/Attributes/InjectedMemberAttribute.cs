@@ -31,7 +31,12 @@ namespace InjectionLibrary.Attributes;
 /// <seealso cref="InjectionLibrary.Utils.InjectionHelper"/>
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Field | AttributeTargets.Property | AttributeTargets.Event,
     AllowMultiple = true)]
-public class InjectedMemberAttribute : Attribute
+public sealed class InjectedMemberAttribute : Attribute
 {
-    internal InjectedMemberAttribute() {}
+    public string Identifier { get; }
+
+    private InjectedMemberAttribute(string id)
+    {
+        Identifier = id;
+    }
 }

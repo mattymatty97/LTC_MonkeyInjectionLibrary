@@ -44,11 +44,13 @@ internal static class Preloader
     public const string GUID = MyPluginInfo.PLUGIN_GUID;
     public const string NAME = MyPluginInfo.PLUGIN_NAME;
     public const string VERSION = MyPluginInfo.PLUGIN_VERSION;
-		
+
     internal static readonly BepInPlugin Plugin = new BepInPlugin(GUID, NAME, VERSION);
 
     private static ReaderParameters _readerParameters;
-    
+
+    private static readonly string BepInPluginAttributeName = typeof(BepInPlugin).FullName;
+    private static readonly string InjectionIdentifierAttributeName = typeof(InjectionIdentifierAttribute).FullName;
     private static readonly string RequiresInjectionAttributeName = typeof(RequiresInjectionsAttribute).FullName;
     private static readonly string InjectInterfaceAttributeName = typeof(InjectInterfaceAttribute).FullName;
     private static readonly string HandleErrorsAttributeName = typeof(HandleErrorsAttribute).FullName;
@@ -56,36 +58,51 @@ internal static class Preloader
     internal static ManualLogSource Log { get; } = Logger.CreateLogSource(nameof(InjectionLibrary));
 
     private static readonly string MainDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-    
-    private static readonly Dictionary<string, Dictionary<string, List<(TypeDefinition @interface, ErrorHandlingStrategy strategy)>>> Interfaces = [];
+
+    private static readonly Dictionary<string, Dictionary<string, List<(string modIdentifier, TypeDefinition @interface, ErrorHandlingStrategy strategy)>>> Interfaces = [];
 
     private static readonly LinkedList<AssemblyDefinition> LoadedAssemblies = [];
-    
-    private static readonly HashSet<string> TargetTypes = [];
 
-    private static ErrorLevel _inError;
+    private static readonly HashSet<string> TargetTypes = [];
 
     internal static ErrorLevel inError
     {
-        get => _inError;
-        set 
+        get;
+        set
         {
-            if (value > _inError)
-                _inError = value;
+            if (value > field)
+                field = value;
         }
     }
-    
+
     //Required by BepInEx!
     public static IEnumerable<string> TargetDLLs => EnumerateTargetDlLs();
 
     private static string _targetAssembly;
-        
+
+    private static IEnumerable<string> EnumerateTargetDlLs()
+    {
+        FindInjections();
+
+        Log.LogInfo($"Found {LoadedAssemblies.Count} assemblies that require Injections");
+
+        foreach (var assembly in Interfaces.Keys)
+        {
+            if (inError > ErrorLevel.Soft)
+                break;
+
+            _targetAssembly = assembly;
+            yield return assembly;
+        }
+        _targetAssembly = null;
+    }
+
     //Required by BepInEx!
     public static void Patch(ref AssemblyDefinition assembly)
     {
         if (inError > ErrorLevel.Soft)
             return;
-        
+
         try
         {
             if (Interfaces.TryGetValue(_targetAssembly, out var dict))
@@ -96,17 +113,17 @@ internal static class Preloader
                     //fix BepInEx default loader (no idea why they do not use their own Resolver when loading patched assemblies)
                     module.assembly_resolver = Disposable.NotOwned<IAssemblyResolver>(TypeLoader.Resolver);
                     module.metadata_resolver = new MetadataResolver(TypeLoader.Resolver);
-                    
+
                     foreach (var type in module.Types)
                     {
                         if (!dict.TryGetValue(type.FullName, out var list))
                             continue;
-                        
+
                         TargetTypes.Remove($"{type.FullName} from {_targetAssembly}");
 
-                        foreach (var (@interface, strategy) in list)
+                        foreach (var (modId, @interface, strategy) in list)
                         {
-                            type.ImplementInterface(@interface, strategy);
+                            type.ImplementInterface(@interface, modId, strategy);
                         }
                     }
                 }
@@ -119,56 +136,29 @@ internal static class Preloader
                 Log.LogFatal($"Exception while patching {assembly.Name.Name}:\n{ex}");
         }
 
-        if (!DevelopConfig.Enabled.Value) 
+        if (!DevelopConfig.Enabled.Value)
             return;
-            
+
         var outputAssembly = $"{DevelopConfig.OutputPath.Value}/{assembly.Name.Name}{DevelopConfig.OutputExtension.Value}";
         Log.LogWarning($"Saving modified Assembly to {outputAssembly}");
         assembly.Write(outputAssembly);
     }
-        
+
     //Required by BepInEx!
     public static void Initialize()
     {
         Log.LogInfo("Preloader Started");
         ModConfig.Init();
         DevelopConfig.Init();
-        
-        var resolver = new DefaultAssemblyResolver();
 
         _readerParameters = new ReaderParameters
         {
             ReadWrite = false,
             ReadSymbols = false,
             ReadingMode = ReadingMode.Deferred,
-            AssemblyResolver = resolver
+            AssemblyResolver = TypeLoader.Resolver
         };
 
-        resolver.ResolveFailure += delegate(object _, AssemblyNameReference reference)
-        {
-            if (!Utility.TryParseAssemblyName(reference.FullName, out var assemblyName))
-            {
-                Log.LogWarning($"Could not parse assembly name: {reference.FullName}");
-                return null;
-            }
-
-            foreach (var item in new[]
-                     {
-                         Paths.BepInExAssemblyDirectory,
-                         Paths.PluginPath,
-                         Paths.PatcherPluginPath,
-                     }.Concat(Paths.DllSearchPaths))
-            {
-                if (Utility.TryResolveDllAssembly(assemblyName, item, _readerParameters, out var assembly))
-                {
-                    return assembly;
-                }
-            }
-
-            Log.LogWarning($"Could not find assembly: {assemblyName}");
-            return null;
-        };
-        
         //make sure the runtime can find any dll from the mods folders
         if (ModConfig.EnhancedCompatibility.Value)
             AppDomain.CurrentDomain.AssemblyResolve += delegate(object _, ResolveEventArgs args)
@@ -186,11 +176,11 @@ internal static class Preloader
                         return assembly;
                     }
                 }
-                
+
                 return null;
             };
     }
-    
+
 
     //Required by BepInEx!
     [UsedImplicitly]
@@ -207,7 +197,7 @@ internal static class Preloader
                 //ignored
             }
         }
-        
+
         LoadedAssemblies.Clear();
 
         if (TargetTypes.Count > 0 && inError < ErrorLevel.Hard)
@@ -215,7 +205,7 @@ internal static class Preloader
             inError = ErrorLevel.Soft;
             Log.LogFatal($"Some Injection types have not been found:\n |- {string.Join("\n |- ", TargetTypes)}");
         }
-        
+
         if (inError > ErrorLevel.None)
         {
             Log.LogWarning("""
@@ -227,21 +217,28 @@ internal static class Preloader
                            //////////////////////////////////////////////////////////////////
                            \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
                            """);
-            
-            if (ConsoleManager.ConsoleActive)
-            {
-                Log.LogWarning("Pausing for 10s to let the user read the logs");
-                Thread.Sleep(TimeSpan.FromSeconds(10));
-            }
-            
+
             if (inError >= ErrorLevel.Hard)
+            {
+
+                if (ConsoleManager.ConsoleActive)
+                {
+                    Log.LogWarning("Pausing for 10s to let the user read the logs");
+                    Thread.Sleep(TimeSpan.FromSeconds(10));
+                }
+
                 Harmony.CreateAndPatchAll(typeof(TerminationPatch), GUID);
+            }
         }
         Log.LogInfo("Preloader Finished");
     }
 
-    private static IEnumerable<string> EnumerateTargetDlLs()
+    private static void FindInjections()
     {
+        var discoveredAssemblies = new Dictionary<string, SortedList<Version, (string path, AssemblyDefinition assembly)>>();
+
+        Log.LogInfo("Searching assemblies with injections");
+
         //loop over all assemblies!
         var assemblyPaths =
             Directory.GetFiles(Path.GetFullPath(Paths.PluginPath), "*.dll", SearchOption.AllDirectories);
@@ -249,25 +246,29 @@ internal static class Preloader
         {
             try
             {
+                var relativePath = Path.GetRelativePath(Paths.PluginPath, path);
+
+                (string Identifier, Version Version) injectionIdentifier = default;
+
                 //try to load the assembly
                 var assemblyDefinition = AssemblyDefinition.ReadAssembly(path, _readerParameters);
-                
+
                 //check if it is tagged with RequiresInjectionAttribute
                 if (!assemblyDefinition.HasCustomAttributes)
                 {
                     assemblyDefinition.Dispose();
                     continue;
                 }
-                
-                var attribute = assemblyDefinition.CustomAttributes.FirstOrDefault(x =>
+
+                var markerAttribute = assemblyDefinition.CustomAttributes.FirstOrDefault(x =>
                     x.AttributeType.FullName == RequiresInjectionAttributeName);
-                if (attribute == null)
+                if (markerAttribute == null)
                 {
                     assemblyDefinition.Dispose();
                     continue;
                 }
 
-                Log.LogDebug($"Assembly {assemblyDefinition.Name.Name} Wants to inject something");
+                Log.LogDebug($"Assembly \"{relativePath}\" Wants to inject something");
 
                 if (assemblyDefinition.Name.Name != Path.GetFileNameWithoutExtension(path))
                 {
@@ -275,26 +276,118 @@ internal static class Preloader
                     Log.LogError($"""
 
                                   ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
-                                  Found assembly "{Path.GetRelativePath(Paths.BepInExRootPath, path)}"
+                                  Found assembly "{relativePath}"
                                   with AssemblyName of "{assemblyDefinition.Name.Name}".
                                   The file name has to be the same as the AssemblyName!
                                   ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
                                   """);
-                    break;
+                    continue;
                 }
 
                 LoadedAssemblies.AddLast(assemblyDefinition);
 
+                var identifierAttribute = assemblyDefinition.CustomAttributes.FirstOrDefault(x =>
+                    x.AttributeType.FullName == InjectionIdentifierAttributeName);
+                if (identifierAttribute != null)
+                {
+                    injectionIdentifier = ((string)identifierAttribute.ConstructorArguments[0].Value, new Version((string)identifierAttribute.ConstructorArguments[1].Value));
+                }
+                else
+                {
+                    Log.LogWarning($"Assembly \"{relativePath}\" does not have a {nameof(InjectionIdentifierAttribute)}, this is deprecated behavior and will be removed in a future release.");
+                }
+
+                if (injectionIdentifier == default)
+                {
+                    var bepInAttribute = assemblyDefinition.MainModule.Types.SelectMany(t => t.CustomAttributes).FirstOrDefault(x =>
+                        x.AttributeType.FullName == BepInPluginAttributeName);
+
+                    if (bepInAttribute != null)
+                    {
+                        injectionIdentifier = ((string)bepInAttribute.ConstructorArguments[0].Value, new Version((string)bepInAttribute.ConstructorArguments[2].Value));
+                    }
+                }
+
+                if (injectionIdentifier == default)
+                {
+                    injectionIdentifier = (assemblyDefinition.Name.Name, assemblyDefinition.Name.Version);
+                }
+
+                Log.LogDebug($"Assembly \"{relativePath}\" is identified as {injectionIdentifier.Identifier} version {injectionIdentifier.Version}");
+
+                if (!discoveredAssemblies.TryGetValue(injectionIdentifier.Identifier, out var dictionaryEntry))
+                {
+                    dictionaryEntry = new SortedList<Version, (string path, AssemblyDefinition assembly)>(InverseComparer<Version>.Default);
+                }
+
+                dictionaryEntry.Add(injectionIdentifier.Version, (path, assemblyDefinition));
+                discoveredAssemblies[injectionIdentifier.Identifier] = dictionaryEntry;
+            }
+            catch (BadImageFormatException ex)
+            {
+                Log.LogWarning("Skipping \"" + Path.GetRelativePath(Paths.PluginPath, path) + "\" because it's not a valid .NET assembly. Full error: " +
+                               ex.Message);
+            }
+            catch (IOException ex)
+            {
+                inError = ErrorLevel.Soft;
+                Log.LogError($"Failed to open \"{Path.GetRelativePath(Paths.PluginPath, path)}\". Full error:\n{ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                inError = ErrorLevel.Hard;
+                Log.LogFatal($"Exception parsing \"{Path.GetRelativePath(Paths.PluginPath, path)}\":\n{ex}");
+                break;
+            }
+        }
+
+        Log.LogInfo("Extracting injections");
+
+        //loop over discovered assemblies
+        foreach (var (identifier, assemblies) in discoveredAssemblies)
+        {
+            if (assemblies.Count == 0)
+                continue;
+
+            var (version, (path, assembly)) = assemblies.FirstOrDefault();
+            var relativePath = Path.GetRelativePath(Paths.PluginPath, path);
+
+            if (assemblies.Count > 1)
+            {
+                var assemblyChain = assemblies.Skip(1)
+                    .Aggregate($"└►v{version} : {relativePath}",
+                        (a, e) => $"├►v{e.Key} : {Path.GetRelativePath(Paths.PluginPath, e.Value.path)}\n{a}");
+                Log.LogWarning($"""
+
+                                ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
+                                Identifier "{identifier}" has multiple assemblies.
+                                {assemblyChain}
+                                only "{relativePath}" will be loaded, 
+                                but having multiple versions in the DllPath will likely cause issues.
+                                ⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️
+                                """);
+
+                foreach (var (_, toUnload) in assemblies.Values.Skip(1))
+                {
+                    toUnload.Dispose();
+                    LoadedAssemblies.Remove(toUnload);
+                }
+            }
+
+            try
+            {
+                Log.LogDebug($"Searching {identifier}");
+
                 var assemblyStrategy = ErrorHandlingStrategy.Terminate;
                 var strategyAttribute =
-                    assemblyDefinition.CustomAttributes.FirstOrDefault(at =>
+                    assembly.CustomAttributes.FirstOrDefault(at =>
                         at.AttributeType.FullName == HandleErrorsAttributeName);
 
                 if (strategyAttribute != null)
                     assemblyStrategy = (ErrorHandlingStrategy)strategyAttribute.ConstructorArguments[0].Value;
 
                 //search for interfaces tagged with InjectInterfaceAttribute
-                foreach (var type in assemblyDefinition.MainModule.Types)
+                foreach (var type in assembly.MainModule.Types)
                 {
                     if (!type.HasCustomAttributes)
                         continue;
@@ -304,17 +397,17 @@ internal static class Preloader
                     if (!injectAttributes.Any())
                         continue;
 
-                    Log.LogDebug($"Found {type.FullName}");
+                    Log.LogDebug($"\tFound {type.FullName}");
 
                     foreach (var customAttribute in injectAttributes)
                     {
                         var targetType = (TypeReference)customAttribute.ConstructorArguments[0].Value;
-                        
+
                         var assemblyName = $"{targetType.Scope.Name}.dll";
                         var typeName = targetType.FullName;
-                        
+
                         TargetTypes.Add($"{typeName} from {assemblyName}");
-                        
+
                         if (!Interfaces.TryGetValue(assemblyName, out var dict))
                         {
                             dict = [];
@@ -326,40 +419,18 @@ internal static class Preloader
                             list = [];
                             dict[typeName] = list;
                         }
-                        list.Add((type, assemblyStrategy));
+                        list.Add((identifier, type, assemblyStrategy));
                     }
-                    
+
                 }
             }
-            catch (BadImageFormatException ex)
-            {
-                Log.LogWarning("Skipping " + Path.GetRelativePath(Paths.BepInExRootPath, path) + " because it's not a valid .NET assembly. Full error: " +
-                               ex.Message);
-            }
-            catch (IOException ex)
-            {
-                inError = ErrorLevel.Soft;
-                Log.LogError($"Failed to open {Path.GetRelativePath(Paths.BepInExRootPath, path)}. Full error:\n{ex.Message}");
-            } 
             catch (Exception ex)
             {
                 inError = ErrorLevel.Hard;
-                Log.LogFatal($"Exception parsing {Path.GetRelativePath(Paths.BepInExRootPath, path)}:\n{ex}");
+                Log.LogFatal($"Exception parsing \"{Path.GetRelativePath(Paths.PluginPath, relativePath)}\":\n{ex}");
                 break;
             }
         }
-
-        Log.LogInfo($"Found {LoadedAssemblies.Count} assemblies that require Injections");
-
-        foreach (var assembly in Interfaces.Keys)
-        {
-            if (inError > ErrorLevel.Soft)
-                break;
-            
-            _targetAssembly = assembly;
-            yield return assembly;
-        }
-        _targetAssembly = null;
     }
 
     private static class DevelopConfig
@@ -386,7 +457,7 @@ internal static class Preloader
         internal static ConfigEntry<string> OutputPath;
         internal static ConfigEntry<string> OutputExtension;
     }
-    
+
     private static class ModConfig
     {
         public static void Init()
@@ -394,7 +465,7 @@ internal static class Preloader
             var config = new ConfigFile(Utility.CombinePaths(Paths.ConfigPath, $"{NAME}.cfg"), true, Plugin);
             //Initialize Configs
             EnhancedCompatibility = config.Bind("LoadOptions", "enhanced_compatibility", false, "Try to load missing assemblies from BepInEx folders");
-            
+
             //remove unused options
             var orphanedEntriesProp = config.GetType()
                 .GetProperty("OrphanedEntries", BindingFlags.NonPublic | BindingFlags.Instance);

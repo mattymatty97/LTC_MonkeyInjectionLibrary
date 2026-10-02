@@ -38,6 +38,24 @@ This approach keeps patches:
 
 ## Required Attributes
 
+### `InjectionIdentifier`
+
+Uniquely identifies an assembly and its version.
+
+**Usage**
+
+* Must be placed at the **assembly level**
+* Accepts an identifier string (such as a mod GUID) and a version string
+
+**Fallback Behavior**
+
+For backwards compatibility if this attribute is missing, the library resolves the identifier and version in the following order:
+
+1. `BepInPlugin` attribute metadata (`GUID` and `Version`) if defined on any type in the assembly.
+2. The assembly's name (`AssemblyName`) and version (`AssemblyVersion`).
+
+---
+
 ### `RequiresInjections`
 
 Marks an assembly as containing injectable interfaces.
@@ -65,7 +83,6 @@ Specifies the base-game class that an interface should be injected into.
 An interface may target **multiple classes** by applying multiple `InjectInterface` attributes.
 
 ---
-
 
 ## Error Handling
 
@@ -141,6 +158,7 @@ using InjectionLibrary;
 using InjectionLibrary.Attributes;
 
 [assembly: RequiresInjections]
+[assembly: InjectionIdentifier("com.example.mod", "1.0.0")]
 [assembly: HandleErrors(ErrorHandlingStrategy.Terminate)]
 
 namespace ExampleMod.Interfaces;

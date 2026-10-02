@@ -109,8 +109,9 @@ internal static class InjectionHelper
     /// </summary>
     /// <param name="self">The type to inject the interface into.</param>
     /// <param name="interface">The interface type to implement.</param>
+    /// <param name="modIdentifier">The identifier of the mod performing the injection.</param>
     /// <param name="errorHandlingStrategy">The strategy for handling errors during implementation.</param>
-    internal static void ImplementInterface(this TypeDefinition self, TypeReference @interface, ErrorHandlingStrategy errorHandlingStrategy)
+    internal static void ImplementInterface(this TypeDefinition self, TypeReference @interface, string modIdentifier, ErrorHandlingStrategy errorHandlingStrategy)
     {
         var definition = @interface.Resolve();
 
@@ -123,23 +124,29 @@ internal static class InjectionHelper
 
         // Validate that the type is an interface
         if (!definition.IsInterface)
-            HandleError($"Type '{@interface.FullName}' is not an interface!", errorHandlingStrategy);
+        {
+            HandleError($"Type '{@interface.FullName}' from '{modIdentifier}' is not an interface!", errorHandlingStrategy);
+            return;
+        }
 
         // Validate that the interface is not generic
         if (definition.HasGenericParameters)
-            HandleError($"Type '{@interface.FullName}' is a Generic type!", errorHandlingStrategy);
+        {
+            HandleError($"Type '{@interface.FullName}' from '{modIdentifier}' is a Generic type!", errorHandlingStrategy);
+            return;
+        }
 
-        Preloader.Log.LogDebug($"Injecting '{@interface.FullName}' into {self.FullName}'");
-        
+        Preloader.Log.LogDebug($"Injecting '{@interface.FullName}' from '{modIdentifier}' into {self.FullName}'");
+
         if (self.Interfaces.Any(i => i.InterfaceType == @interface))
         {
-            Preloader.Log.LogWarning($"Interface '{@interface.FullName}' is already implemented, SKIPPING!");
+            Preloader.Log.LogWarning($"Interface '{@interface.FullName}' from '{modIdentifier}' is already implemented, SKIPPING!");
             return;
         }
 
         foreach (var parent in definition.Interfaces)
         {
-            self.ImplementInterface(parent.InterfaceType, errorHandlingStrategy);
+            self.ImplementInterface(parent.InterfaceType, modIdentifier, errorHandlingStrategy);
         }
 
         // Import the interface reference into the target assembly
@@ -149,9 +156,9 @@ internal static class InjectionHelper
         var blacklist = new HashSet<IMemberDefinition>();
 
         // Implement all interface members
-        Interfaces.ImplementProperties(self, definition, blacklist, errorHandlingStrategy);
-        Interfaces.ImplementEvents(self, definition, blacklist, errorHandlingStrategy);
-        Interfaces.ImplementMethods(self, definition, blacklist, errorHandlingStrategy);
+        Interfaces.ImplementProperties(self, definition, blacklist, modIdentifier, errorHandlingStrategy);
+        Interfaces.ImplementEvents(self, definition, blacklist, modIdentifier, errorHandlingStrategy);
+        Interfaces.ImplementMethods(self, definition, blacklist, modIdentifier, errorHandlingStrategy);
 
         // Add the interface to the type's interface list
         self.Interfaces.Add(new InterfaceImplementation(newRef));
@@ -168,14 +175,16 @@ internal static class InjectionHelper
         /// <param name="type">The target type to implement properties into.</param>
         /// <param name="interface">The interface containing the properties to implement.</param>
         /// <param name="blacklist">Set of members already implemented to avoid duplicates.</param>
+        /// <param name="modIdentifier">The identifier of the mod performing the injection.</param>
         /// <param name="errorHandlingStrategy">The strategy for handling errors during implementation.</param>
         internal static void ImplementProperties(in TypeDefinition type, TypeDefinition @interface,
             in HashSet<IMemberDefinition> blacklist,
+            string modIdentifier,
             ErrorHandlingStrategy errorHandlingStrategy)
         {
             foreach (var property in @interface.Properties)
             {
-                ImplementProperty(type, property, blacklist, errorHandlingStrategy);
+                ImplementProperty(type, property, blacklist, modIdentifier, errorHandlingStrategy);
             }
         }
 
@@ -185,14 +194,16 @@ internal static class InjectionHelper
         /// <param name="type">The target type to implement events into.</param>
         /// <param name="interface">The interface containing the events to implement.</param>
         /// <param name="blacklist">Set of members already implemented to avoid duplicates.</param>
+        /// <param name="modIdentifier">The identifier of the mod performing the injection.</param>
         /// <param name="errorHandlingStrategy">The strategy for handling errors during implementation.</param>
         internal static void ImplementEvents(in TypeDefinition type, TypeDefinition @interface,
             in HashSet<IMemberDefinition> blacklist,
+            string modIdentifier,
             ErrorHandlingStrategy errorHandlingStrategy)
         {
             foreach (var @event in @interface.Events)
             {
-                ImplementEvent(type, @event, blacklist, errorHandlingStrategy);
+                ImplementEvent(type, @event, blacklist, modIdentifier, errorHandlingStrategy);
             }
         }
 
@@ -202,14 +213,16 @@ internal static class InjectionHelper
         /// <param name="type">The target type to implement methods into.</param>
         /// <param name="interface">The interface containing the methods to implement.</param>
         /// <param name="blacklist">Set of members already implemented to avoid duplicates.</param>
+        /// <param name="modIdentifier">The identifier of the mod performing the injection.</param>
         /// <param name="errorHandlingStrategy">The strategy for handling errors during implementation.</param>
         internal static void ImplementMethods(in TypeDefinition type, TypeDefinition @interface,
             in HashSet<IMemberDefinition> blacklist,
+            string modIdentifier,
             ErrorHandlingStrategy errorHandlingStrategy)
         {
             foreach (var method in @interface.Methods)
             {
-                ImplementMethod(type, method, blacklist, errorHandlingStrategy);
+                ImplementMethod(type, method, blacklist, modIdentifier, errorHandlingStrategy);
             }
         }
 
@@ -220,9 +233,11 @@ internal static class InjectionHelper
         /// <param name="type">The target type to implement the property into.</param>
         /// <param name="property">The property definition from the interface.</param>
         /// <param name="blacklist">Set of members already implemented to avoid duplicates.</param>
+        /// <param name="modIdentifier">The identifier of the mod performing the injection.</param>
         /// <param name="errorHandlingStrategy">The strategy for handling errors during implementation.</param>
         private static void ImplementProperty(in TypeDefinition type, PropertyDefinition property,
             in HashSet<IMemberDefinition> blacklist,
+            string modIdentifier,
             ErrorHandlingStrategy errorHandlingStrategy)
         {
             PropertyDefinition implementation = null;
@@ -255,7 +270,8 @@ internal static class InjectionHelper
                 if ( getMethod != null)
                 {
                     // Method already exists, update its attributes
-                    HandleError($"Method 'get_{property.Name}' is already defined in '{type.FullName}'", errorHandlingStrategy);
+                    var identifier = getMethod.GetInjectedIdentifier();
+                    HandleError($"Method 'get_{property.Name}' is already defined in '{type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
                     getMethod.Attributes = InterfaceSpecialMethodAttributes;
                 }
                 else
@@ -270,7 +286,7 @@ internal static class InjectionHelper
                         typeRef
                     );
 
-                    getMethod.MarkAsInjected(type.Module);
+                    getMethod.MarkAsInjected(type.Module, modIdentifier);
 
                     // Generate IL: load 'this', load backing field, return
                     var ilProcessor = getMethod.Body.GetILProcessor();
@@ -281,7 +297,7 @@ internal static class InjectionHelper
                     implementation.GetMethod = getMethod;
                 }
 
-                getMethod.CopyCustomAttributes(property.GetMethod);
+                type.Module.CopyCustomAttributes(getMethod,property.GetMethod);
             }
 
             // Implement the setter method if it's abstract
@@ -293,7 +309,8 @@ internal static class InjectionHelper
                 if (setMethod != null)
                 {
                     // Method already exists, update its attributes
-                    HandleError($"Method 'set_{property.Name}' is already defined in '{type.FullName}'", errorHandlingStrategy);
+                    var identifier = setMethod.GetInjectedIdentifier();
+                    HandleError($"Method 'set_{property.Name}' is already defined in '{type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
                     setMethod.Attributes = InterfaceSpecialMethodAttributes;
                 }
                 else
@@ -309,7 +326,7 @@ internal static class InjectionHelper
                         type.Module.TypeSystem.Void
                     );
 
-                    setMethod.MarkAsInjected(type.Module);
+                    setMethod.MarkAsInjected(type.Module, modIdentifier);
 
                     // Add 'value' parameter
                     setMethod.Parameters.Add(new ParameterDefinition("value", ParameterAttributes.None, typeRef));
@@ -324,7 +341,7 @@ internal static class InjectionHelper
                     implementation.SetMethod = setMethod;
                 }
 
-                setMethod.CopyCustomAttributes(property.SetMethod);
+                type.Module.CopyCustomAttributes(setMethod, property.SetMethod);
             }
 
             // If no implementation was needed (property has default implementation), exit early
@@ -354,11 +371,14 @@ internal static class InjectionHelper
                         FieldAttributes.Private,
                         typeRef
                     );
-                    
-                    backingField.MarkAsInjected(type.Module);
+
+                    backingField.MarkAsInjected(type.Module, modIdentifier);
                 }
                 else
-                    HandleError($"Field '<{property.Name}>k__BackingField' already exists in {type.FullName}", errorHandlingStrategy);
+                {
+                    var identifier = backingField.GetInjectedIdentifier();
+                    HandleError($"Field '<{property.Name}>k__BackingField' already exists in {type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
+                }
 
                 // Create the property definition
                 propertyImpl = type.FindProperty(property.Name);
@@ -366,12 +386,15 @@ internal static class InjectionHelper
                 {
                     propertyImpl = new PropertyDefinition(property.Name, InterfacePropertyAttributes, typeRef);
 
-                    propertyImpl.CopyCustomAttributes(property);
+                    type.Module.CopyCustomAttributes(propertyImpl, property);
 
-                    propertyImpl.MarkAsInjected(type.Module);
+                    propertyImpl.MarkAsInjected(type.Module, modIdentifier);
                 }
                 else
-                    HandleError($"Property '{property.Name}' already exists in {type.FullName}", errorHandlingStrategy);
+                {
+                    var identifier = propertyImpl.GetInjectedIdentifier();
+                    HandleError($"Property '{property.Name}' already exists in {type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
+                }
 
                 hasImplementation = true;
             }
@@ -384,9 +407,11 @@ internal static class InjectionHelper
         /// <param name="type">The target type to implement the event into.</param>
         /// <param name="event">The event definition from the interface.</param>
         /// <param name="blacklist">Set of members already implemented to avoid duplicates.</param>
+        /// <param name="modIdentifier">The identifier of the mod performing the injection.</param>
         /// <param name="errorHandlingStrategy">The strategy for handling errors during implementation.</param>
         private static void ImplementEvent(in TypeDefinition type, EventDefinition @event,
             in HashSet<IMemberDefinition> blacklist,
+            string modIdentifier,
             ErrorHandlingStrategy errorHandlingStrategy)
         {
             EventDefinition implementation = null;
@@ -415,10 +440,11 @@ internal static class InjectionHelper
 
                 Preloader.Log.LogDebug($"Adding add of    '{@event.Name}' to {type.FullName}'");
                 var addMethod = type.FindMethod($"add_{@event.Name}");
-                
+
                 if (addMethod != null)
                 {
-                    HandleError($"Method 'add_{@event.Name}' is already defined in '{type.FullName}'", errorHandlingStrategy);
+                    var identifier = addMethod.GetInjectedIdentifier();
+                    HandleError($"Method 'add_{@event.Name}' is already defined in '{type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
                     addMethod.Attributes = InterfaceSpecialMethodAttributes;
                 }
                 else
@@ -430,8 +456,8 @@ internal static class InjectionHelper
                         InterfaceSpecialMethodAttributes,
                         type.Module.TypeSystem.Void
                     );
-                    
-                    addMethod.MarkAsInjected(type.Module);
+
+                    addMethod.MarkAsInjected(type.Module, modIdentifier);
 
                     addMethod.Parameters.Add(new ParameterDefinition("value", ParameterAttributes.None, typeRef));
                     var ilProcessor = addMethod.Body.GetILProcessor();
@@ -449,7 +475,7 @@ internal static class InjectionHelper
                     implementation.AddMethod = addMethod;
                 }
 
-                addMethod.CopyCustomAttributes(@event.AddMethod);
+                type.Module.CopyCustomAttributes(addMethod, @event.AddMethod);
             }
 
             if (@event.RemoveMethod is { IsAbstract: true } && blacklist.Add(@event.RemoveMethod))
@@ -458,11 +484,12 @@ internal static class InjectionHelper
                     Init(type, out implementation);
 
                 Preloader.Log.LogDebug($"Adding remove of '{@event.Name}' to {type.FullName}'");
-                
+
                 var removeMethod = type.FindMethod($"remove_{@event.Name}");
                 if (removeMethod != null)
                 {
-                    HandleError($"Method 'remove_{@event.Name}' is already defined in '{type.FullName}'", errorHandlingStrategy);
+                    var identifier = removeMethod.GetInjectedIdentifier();
+                    HandleError($"Method 'remove_{@event.Name}' is already defined in '{type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
                     removeMethod.Attributes = InterfaceSpecialMethodAttributes;
                 }
                 else
@@ -472,8 +499,8 @@ internal static class InjectionHelper
                         InterfaceSpecialMethodAttributes,
                         type.Module.TypeSystem.Void
                     );
-                    
-                    removeMethod.MarkAsInjected(type.Module);
+
+                    removeMethod.MarkAsInjected(type.Module, modIdentifier);
 
                     removeMethod.Parameters.Add(new ParameterDefinition("value", ParameterAttributes.None, typeRef));
                     var ilProcessor = removeMethod.Body.GetILProcessor();
@@ -491,7 +518,7 @@ internal static class InjectionHelper
                     implementation.RemoveMethod = removeMethod;
                 }
 
-                removeMethod.CopyCustomAttributes(@event.RemoveMethod);
+                type.Module.CopyCustomAttributes(removeMethod, @event.RemoveMethod);
             }
 
             if (@event.InvokeMethod is { IsAbstract: true } && blacklist.Add(@event.InvokeMethod))
@@ -502,21 +529,22 @@ internal static class InjectionHelper
                 var invokeMethod = type.FindMethod($"raise_{@event.Name}");
                 if (invokeMethod != null)
                 {
-                    HandleError($"Method 'raise_{@event.Name}' is already defined in '{type.FullName}'", errorHandlingStrategy);
+                    var identifier = invokeMethod.GetInjectedIdentifier();
+                    HandleError($"Method 'raise_{@event.Name}' is already defined in '{type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
                     invokeMethod.Attributes = InterfaceSpecialMethodAttributes;
                 }
                 else
                 {
                     if (!hasImplementation)
                         Init(type, out implementation);
-                    
+
                     invokeMethod = new MethodDefinition(
                         $"raise_{@event.Name}",
                         InterfaceSpecialMethodAttributes,
                         type.Module.TypeSystem.Void
                     );
-                    
-                    invokeMethod.MarkAsInjected(type.Module);
+
+                    invokeMethod.MarkAsInjected(type.Module, modIdentifier);
 
                     // Invoke method parameters depend on the delegate signature
                     foreach (var param in @event.InvokeMethod.Parameters)
@@ -540,7 +568,7 @@ internal static class InjectionHelper
                     implementation.InvokeMethod = invokeMethod;
                 }
 
-                invokeMethod.CopyCustomAttributes(@event.InvokeMethod);
+                type.Module.CopyCustomAttributes(invokeMethod, @event.InvokeMethod);
             }
 
             if (!hasImplementation)
@@ -565,25 +593,31 @@ internal static class InjectionHelper
                         FieldAttributes.Private,
                         typeRef
                     );
-                    
-                    backingField.MarkAsInjected(type.Module);
+
+                    backingField.MarkAsInjected(type.Module, modIdentifier);
                 }
-                else 
-                    HandleError($"Field '{@event.Name}' already exists in {type.FullName}", errorHandlingStrategy);
+                else
+                {
+                    var identifier = backingField.GetInjectedIdentifier();
+                    HandleError($"Field '{@event.Name}' already exists in {type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
+                }
 
                 // Create the property
                 eventImpl = type.FindEvent(@event.Name);
                 if (eventImpl == null)
                 {
                     eventImpl = new EventDefinition(@event.Name, InterfaceEventAttributes, typeRef);
-                    
-                    eventImpl.CopyCustomAttributes(@event);
-                    
-                    eventImpl.MarkAsInjected(type.Module);
+
+                    type.Module.CopyCustomAttributes(eventImpl, @event);
+
+                    eventImpl.MarkAsInjected(type.Module, modIdentifier);
                 }
                 else
-                    HandleError($"Event '{@event.Name}' already exists in {type.FullName}", errorHandlingStrategy);
-                
+                {
+                    var identifier = eventImpl.GetInjectedIdentifier();
+                    HandleError($"Event '{@event.Name}' already exists in {type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
+                }
+
 
                 hasImplementation = true;
             }
@@ -591,6 +625,7 @@ internal static class InjectionHelper
 
         private static void ImplementMethod(in TypeDefinition type, MethodDefinition method,
             in HashSet<IMemberDefinition> blacklist,
+            string modIdentifier,
             ErrorHandlingStrategy errorHandlingStrategy)
         {
             if (!blacklist.Add(method))
@@ -601,7 +636,7 @@ internal static class InjectionHelper
             //only implement methods that do not have a default implementation!
             if (!method.IsAbstract)
                 return;
-            
+
             var attribute = method.CustomAttributes.FirstOrDefault(a => a.AttributeType.FullName == ErrorStrategyAttributeName);
             if (attribute != null)
             {
@@ -611,7 +646,9 @@ internal static class InjectionHelper
             var implementation = type.FindMethod(method.Name);
             if (implementation != null)
             {
-                HandleError($"Method '{method.Name}' is already defined in '{type.FullName}'", errorHandlingStrategy);
+                var identifier = method.GetInjectedIdentifier();
+
+                HandleError($"Method '{method.Name}' is already defined in '{type.FullName}'{(identifier != null ? $" injected by '{identifier}'" : string.Empty)}", errorHandlingStrategy);
 
                 implementation.Attributes = InterfaceMethodAttributes;
             }
@@ -646,110 +683,69 @@ internal static class InjectionHelper
                 {
                     il.Emit(OpCodes.Ret);
                 }
-                
-                implementation.MarkAsInjected(type.Module);
+
+                implementation.MarkAsInjected(type.Module, modIdentifier);
             }
-            
-            implementation.CopyCustomAttributes(method);
+
+            type.Module.CopyCustomAttributes(implementation,method);
             // Add the method to the type
             type.Methods.TryAdd(implementation);
         }
     }
 
-    private static void MarkAsInjected<T>(this T target, ModuleDefinition module) where T : MemberReference, ICustomAttributeProvider
+    private static void MarkAsInjected<T>(this T target, ModuleDefinition module, string modIdentifier) where T : MemberReference, ICustomAttributeProvider
     {
         // Import the attribute type from your current assembly
         module.ImportReference(typeof(InjectedMemberAttribute));
 
         // Get the constructor you want to use
-        var attributeCtor = module.ImportReference(typeof(InjectedMemberAttribute).GetConstructor(AccessTools.all, null, [], []));
+        var attributeCtor = module.ImportReference(typeof(InjectedMemberAttribute).GetConstructor(AccessTools.all, null, [typeof(string)], []));
 
         // Create the custom attribute
         var customAttribute = new CustomAttribute(attributeCtor);
-        
+
+        customAttribute.ConstructorArguments.Add(new CustomAttributeArgument(module.ImportReference(typeof(string)), modIdentifier));
+
         target.CustomAttributes.Add(customAttribute);
     }
-    
-    private static void CopyCustomAttributes<T>(this T target, T source) where T : MemberReference, ICustomAttributeProvider
+
+    private static string GetInjectedIdentifier<T>(this T target) where T : MemberReference, ICustomAttributeProvider
     {
-        var targetModule = target.Module;
-    
+        foreach (var attribute in target.CustomAttributes)
+        {
+            if (attribute.AttributeType.FullName == typeof(InjectedMemberAttribute).FullName)
+                return attribute.ConstructorArguments.Count > 0 ? attribute.ConstructorArguments[0].Value.ToString() : null;
+        }
+        return null;
+    }
+
+    private static void CopyCustomAttributes<T>(this ModuleDefinition module, T target, T source) where T : MemberReference, ICustomAttributeProvider
+    {
+        if (target.Module != null && target.Module != module)
+            throw new InvalidOperationException("Cannot copy custom attributes between different modules.");
+
         foreach (var attribute in source.CustomAttributes)
         {
             if (attribute.AttributeType.FullName == ErrorStrategyAttributeName)
                 continue;
-            
+
             // Import the attribute constructor into the target module
-            var attributeConstructor = targetModule.ImportReference(attribute.Constructor);
-        
-            // Create a new custom attribute
-            var newAttribute = new CustomAttribute(attributeConstructor);
-        
-            // Copy constructor arguments
-            foreach (var arg in attribute.ConstructorArguments)
-            {
-                newAttribute.ConstructorArguments.Add(
-                    targetModule.ImportCustomAttributeArgument(arg)
-                );
-            }
-        
-            // Copy named arguments (properties/fields)
-            foreach (var namedArg in attribute.Properties)
-            {
-                newAttribute.Properties.Add(new CustomAttributeNamedArgument(
-                    namedArg.Name,
-                    targetModule.ImportCustomAttributeArgument(namedArg.Argument)
-                ));
-            }
-        
-            foreach (var namedArg in attribute.Fields)
-            {
-                newAttribute.Fields.Add(new CustomAttributeNamedArgument(
-                    namedArg.Name,
-                    targetModule.ImportCustomAttributeArgument(namedArg.Argument)
-                ));
-            }
-        
+            var attributeConstructor = module.ImportReference(attribute.Constructor);
+
+            // Create a new custom attribute and Copy constructor arguments
+            var newAttribute = new CustomAttribute(attributeConstructor, attribute.GetBlob());
+
             target.CustomAttributes.Add(newAttribute);
         }
     }
-    
-    private static CustomAttributeArgument ImportCustomAttributeArgument(this ModuleDefinition targetModule, CustomAttributeArgument arg)
-    {
-        var importedType = targetModule.ImportReference(arg.Type);
 
-        switch (arg.Value)
-        {
-            // Handle different argument value types
-            case TypeReference typeRef:
-                // Type arguments (e.g., typeof(SomeType)) need to be imported
-                return new CustomAttributeArgument(
-                    importedType,
-                    targetModule.ImportReference(typeRef)
-                );
-            case CustomAttributeArgument[] array:
-            {
-                // Handle array values - each element might contain TypeReferences
-                var importedArray = new CustomAttributeArgument[array.Length];
-                for (int i = 0; i < array.Length; i++)
-                {
-                    importedArray[i] = ImportCustomAttributeArgument(targetModule, array[i]);
-                }
-                return new CustomAttributeArgument(importedType, importedArray);
-            }
-            default:
-                // Primitive values (strings, ints, enums, etc.) can be copied directly
-                return new CustomAttributeArgument(importedType, arg.Value);
-        }
-    }
-    
     private static void TryAdd<T>(this Collection<T> collection, T newMember) where T : IMemberDefinition
     {
         if (collection.Any(member => member.Name == newMember.Name))
             return;
         collection.Add(newMember);
     }
-    
+
     internal static string GetAssemblyQualifiedName(this TypeReference type)
     {
         var assemblyName = type.Scope switch
@@ -764,5 +760,5 @@ internal static class InjectionHelper
             : type.FullName;
     }
 
-    
+
 }
